@@ -1,6 +1,67 @@
+/**
+ * @fileoverview Cloudflare Workers main handler for Gemini Playground
+ * 
+ * This module serves as the primary entry point for the Cloudflare Workers runtime,
+ * handling HTTP requests, WebSocket connections, and API proxying for the Gemini AI interface.
+ * 
+ * Key responsibilities:
+ * - WebSocket proxy to Google's Generative Language API
+ * - Static asset serving
+ * - API request proxying
+ * - Content type detection and handling
+ * 
+ * @author Gemini Playground
+ * @version 1.0.0
+ */
+
+/**
+ * Asset manifest for static content serving
+ * Currently empty but can be populated with static asset mappings
+ * @type {Object.<string, string>}
+ */
 const assetManifest = {};
 
+/**
+ * Cloudflare Workers default export handler
+ * 
+ * Main request handler that routes incoming requests to appropriate processors:
+ * - WebSocket upgrade requests → handleWebSocket
+ * - API endpoints (/chat/completions, /embeddings, /models) → handleAPIRequest  
+ * - Static assets → direct serving from __STATIC_CONTENT
+ * 
+ * @type {Object}
+ */
 export default {
+  /**
+   * Primary fetch handler for all incoming requests
+   * 
+   * Routes requests based on headers and URL patterns:
+   * 1. WebSocket upgrade requests are handled by handleWebSocket
+   * 2. API endpoints are proxied through handleAPIRequest
+   * 3. Static assets are served directly from Cloudflare's KV store
+   * 4. All other requests return 404
+   * 
+   * Time Complexity: O(1) - constant time routing based on header/URL checks
+   * Space Complexity: O(1) - minimal memory usage for URL parsing
+   * 
+   * @async
+   * @param {Request} request - Incoming HTTP request object
+   * @param {Object} env - Cloudflare Workers environment bindings
+   * @param {Object} ctx - Execution context for request handling
+   * @returns {Promise<Response>} HTTP response object
+   * 
+   * @example
+   * // WebSocket connection
+   * // GET /ws with Upgrade: websocket header
+   * 
+   * @example
+   * // API request
+   * // POST /chat/completions
+   * 
+   * @example
+   * // Static asset
+   * // GET /css/style.css
+   */
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
@@ -43,6 +104,30 @@ export default {
   },
 };
 
+/**
+ * Determines MIME content type based on file extension
+ * 
+ * Maps common file extensions to their corresponding MIME types for proper
+ * HTTP response headers. Supports web assets including JavaScript, CSS, HTML,
+ * JSON, and common image formats.
+ * 
+ * Time Complexity: O(1) - constant time hash map lookup
+ * Space Complexity: O(1) - fixed size mapping object
+ * 
+ * Flow:
+ * 1. Extract file extension from path
+ * 2. Convert to lowercase for case-insensitive matching
+ * 3. Look up MIME type in predefined mapping
+ * 4. Return specific type or default to 'text/plain'
+ * 
+ * @param {string} path - File path including extension (e.g., 'script.js', '/css/style.css')
+ * @returns {string} MIME type string (e.g., 'application/javascript', 'text/css')
+ * 
+ * @example
+ * getContentType('/js/main.js'); // Returns 'application/javascript'
+ * getContentType('style.css'); // Returns 'text/css'
+ * getContentType('unknown.xyz'); // Returns 'text/plain'
+ */
 function getContentType(path) {
   const ext = path.split('.').pop().toLowerCase();
   const types = {
@@ -58,6 +143,43 @@ function getContentType(path) {
   return types[ext] || 'text/plain';
 }
 
+/**
+ * Handles WebSocket upgrade requests and establishes proxy connection to Google's Gemini API
+ * 
+ * Creates a bidirectional WebSocket proxy between the client and Google's Generative Language API.
+ * Implements message queuing for handling messages received before the target connection is established.
+ * 
+ * Key features:
+ * - WebSocket pair creation for client-server communication
+ * - Message queuing for race condition handling
+ * - Bidirectional message forwarding
+ * - Connection state management and error handling
+ * - Comprehensive logging for debugging
+ * 
+ * Time Complexity: O(n) where n is number of queued messages during connection setup
+ * Space Complexity: O(m) where m is total size of pending messages in queue
+ * 
+ * Flow:
+ * 1. Validate WebSocket upgrade request
+ * 2. Extract target URL path and query parameters
+ * 3. Create WebSocket pair (client ↔ proxy)
+ * 4. Establish connection to Google's API
+ * 5. Set up bidirectional event listeners
+ * 6. Handle message queuing during connection establishment
+ * 7. Forward messages between client and API
+ * 
+ * @async
+ * @param {Request} request - HTTP request with WebSocket upgrade headers
+ * @param {Object} env - Cloudflare Workers environment (unused in current implementation)
+ * @returns {Promise<Response>} WebSocket response with 101 status code
+ * 
+ * @throws {Response} Returns 400 status if request is not a valid WebSocket upgrade
+ * 
+ * @example
+ * // Client initiates WebSocket connection
+ * // GET /ws?key=API_KEY with headers: { Upgrade: 'websocket' }
+ * // → Proxies to wss://generativelanguage.googleapis.com/ws?key=API_KEY
+ */
 async function handleWebSocket(request, env) {
 
 
@@ -177,6 +299,42 @@ async function handleWebSocket(request, env) {
    });
 }
 
+/**
+ * Handles API requests by proxying them through the worker.mjs module
+ * 
+ * Delegates API request processing to the specialized API proxy worker,
+ * which handles OpenAI-compatible endpoints and forwards them to Google's Gemini API.
+ * Provides error handling and appropriate HTTP status codes for failed requests.
+ * 
+ * Supported endpoints:
+ * - /chat/completions - Chat completion requests
+ * - /embeddings - Text embedding requests  
+ * - /models - Available model listing
+ * 
+ * Time Complexity: O(1) - constant time module import and delegation
+ * Space Complexity: O(1) - minimal memory for error handling
+ * 
+ * Flow:
+ * 1. Dynamic import of API proxy worker module
+ * 2. Delegate request processing to worker.default.fetch
+ * 3. Handle any errors with proper HTTP responses
+ * 4. Return processed response or error response
+ * 
+ * @async
+ * @param {Request} request - HTTP request object for API endpoint
+ * @param {Object} env - Cloudflare Workers environment bindings
+ * @returns {Promise<Response>} Processed API response or error response
+ * 
+ * @throws {Response} Returns 500 status for module import or processing errors
+ * 
+ * @example
+ * // POST /chat/completions
+ * // → Imports ./api_proxy/worker.mjs and delegates processing
+ * 
+ * @example
+ * // GET /models 
+ * // → Returns available Gemini models in OpenAI-compatible format
+ */
 async function handleAPIRequest(request, env) {
   try {
     const worker = await import('./api_proxy/worker.mjs');
